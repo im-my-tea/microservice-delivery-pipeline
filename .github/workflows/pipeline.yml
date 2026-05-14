@@ -8,6 +8,14 @@ env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: cloud-projects
 
+# IAM permissions required for the GitHub Actions IAM user:
+#   - ecr:GetAuthorizationToken, ecr:BatchCheckLayerAvailability,
+#     ecr:CompleteLayerUpload, ecr:InitiateLayerUpload, ecr:PutImage,
+#     ecr:UploadLayerPart  (existing — build & push)
+#   - apprunner:StartDeployment   (trigger redeploys for staging & prod)
+#   - apprunner:DescribeService   (poll deployment status)
+#   - apprunner:ListServices      (resolve prod service ARN by name)
+
 jobs:
   test-and-build:
     runs-on: ubuntu-latest
@@ -59,3 +67,123 @@ jobs:
         docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+  deploy-staging:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    env:
+      STAGING_SERVICE_ARN: arn:aws:apprunner:us-east-1:209042752946:service/microservice-staging/d483ae7bbeed45fc99cc71ff7371f35c
+
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Trigger App Runner deployment (staging)
+      run: |
+        aws apprunner start-deployment --service-arn "$STAGING_SERVICE_ARN"
+
+    - name: Wait for staging deployment to complete
+      run: |
+        echo "Waiting for App Runner staging deployment..."
+        for i in $(seq 1 60); do
+          STATUS=$(aws apprunner describe-service \
+            --service-arn "$STAGING_SERVICE_ARN" \
+            --query "Service.Status" --output text)
+          echo "Attempt $i — current status: $STATUS"
+          if [ "$STATUS" = "RUNNING" ]; then
+            echo "Staging deployment complete."
+            exit 0
+          fi
+          if [ "$STATUS" = "CREATE_FAILED" ] || [ "$STATUS" = "DELETE_FAILED" ] || [ "$STATUS" = "PAUSED" ]; then
+            echo "Staging deployment failed with status: $STATUS"
+            exit 1
+          fi
+          sleep 15
+        done
+        echo "Timed out waiting for staging deployment."
+        exit 1
+
+  smoke-tests:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    env:
+      STAGING_URL: https://mp2tqrd5x4.us-east-1.awsapprunner.com
+
+    steps:
+    - name: Health check (GET /)
+      run: |
+        RESPONSE=$(curl -sS "$STAGING_URL/")
+        echo "Response: $RESPONSE"
+        if ! echo "$RESPONSE" | grep -q "running"; then
+          echo "Health check failed — response did not contain 'running'"
+          exit 1
+        fi
+
+    - name: Metrics ingest (POST /metrics)
+      run: |
+        RESPONSE=$(curl -sS -X POST "$STAGING_URL/metrics" \
+          -H "Content-Type: application/json" \
+          -d '{"server_name":"test","cpu_usage":45.2,"ram_usage":512,"is_active":true}')
+        echo "Response: $RESPONSE"
+        if ! echo "$RESPONSE" | grep -q "Data Received"; then
+          echo "Metrics test failed — response did not contain 'Data Received'"
+          exit 1
+        fi
+
+  deploy-prod:
+    needs: smoke-tests
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Resolve prod service ARN
+      id: resolve-arn
+      run: |
+        ARN=$(aws apprunner list-services \
+          --query "ServiceSummaryList[?ServiceName=='microservice-prod'].ServiceArn" \
+          --output text)
+        if [ -z "$ARN" ] || [ "$ARN" = "None" ]; then
+          echo "Could not find App Runner service named 'microservice-prod'"
+          exit 1
+        fi
+        echo "service_arn=$ARN" >> $GITHUB_OUTPUT
+
+    - name: Trigger App Runner deployment (prod)
+      env:
+        PROD_SERVICE_ARN: ${{ steps.resolve-arn.outputs.service_arn }}
+      run: |
+        aws apprunner start-deployment --service-arn "$PROD_SERVICE_ARN"
+
+    - name: Wait for prod deployment to complete
+      env:
+        PROD_SERVICE_ARN: ${{ steps.resolve-arn.outputs.service_arn }}
+      run: |
+        echo "Waiting for App Runner prod deployment..."
+        for i in $(seq 1 60); do
+          STATUS=$(aws apprunner describe-service \
+            --service-arn "$PROD_SERVICE_ARN" \
+            --query "Service.Status" --output text)
+          echo "Attempt $i — current status: $STATUS"
+          if [ "$STATUS" = "RUNNING" ]; then
+            echo "Prod deployment complete."
+            exit 0
+          fi
+          if [ "$STATUS" = "CREATE_FAILED" ] || [ "$STATUS" = "DELETE_FAILED" ] || [ "$STATUS" = "PAUSED" ]; then
+            echo "Prod deployment failed with status: $STATUS"
+            exit 1
+          fi
+          sleep 15
+        done
+        echo "Timed out waiting for prod deployment."
+        exit 1
