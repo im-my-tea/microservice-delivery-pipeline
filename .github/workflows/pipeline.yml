@@ -23,11 +23,11 @@ jobs:
     steps:
     # 1. Get Code
     - name: Checkout Code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     # 2. Setup Python
     - name: Set up Python 3.12
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: "3.12"
 
@@ -45,7 +45,7 @@ jobs:
 
     # 5. Configure AWS Credentials (Only runs if tests pass)
     - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
+      uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -54,7 +54,7 @@ jobs:
     # 6. Login to ECR
     - name: Login to Amazon ECR
       id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
+      uses: aws-actions/amazon-ecr-login@v2
 
     # 7. Build, Tag, and Push Docker Image
     - name: Build, tag, and push image to Amazon ECR
@@ -76,7 +76,7 @@ jobs:
 
     steps:
     - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
+      uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -141,7 +141,7 @@ jobs:
 
     steps:
     - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
+      uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
